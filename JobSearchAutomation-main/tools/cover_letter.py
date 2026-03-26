@@ -165,7 +165,7 @@ def build_docx(company: str, job_title: str, paragraphs: list[str]) -> Path:
 
     # Save to .tmp/
     TMP_FOLDER.mkdir(exist_ok=True)
-    filename = f"cover_{_safe_filename(company)}_{_safe_filename(job_title)}.docx"
+    filename = f"Watson_Dan_{_safe_filename(company)}_{_safe_filename(job_title)}_CL.docx"
     out_path = TMP_FOLDER / filename
     doc.save(str(out_path))
     return out_path

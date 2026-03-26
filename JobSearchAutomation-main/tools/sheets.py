@@ -30,6 +30,9 @@ Usage:
     # Create the Manual Jobs tab (no-op if already exists):
     python tools/sheets.py --action create_manual_tab --sheet_id SHEET_ID
 
+    # Create (or refresh) the Dashboard tab with live outcome counts:
+    python tools/sheets.py --action create_dashboard_tab --sheet_id SHEET_ID
+
     # Get pending manual jobs (Status blank):
     python tools/sheets.py --action get_manual_jobs --sheet_id SHEET_ID
 
@@ -58,6 +61,7 @@ Returns:
     create_manual_tab    → prints "ok" or "exists"
     get_manual_jobs      → prints JSON array of pending job objects
     update_manual_job    → prints "ok"
+    create_dashboard_tab → prints "ok"
 
 Sheet schema (column order is fixed — do not change):
     A: Date Found
@@ -108,6 +112,20 @@ MANUAL_SHEET_NAME = "Manual Jobs"
 MANUAL_HEADERS = [
     "Company", "Job Title", "URL", "Location", "Salary",
     "Main Row", "Status", "Resume URL", "Cover Letter",
+]
+
+DASHBOARD_SHEET_NAME = "Dashboard"
+
+# Status labels tracked on the dashboard (order determines row order)
+DASHBOARD_STATUSES = [
+    "New",
+    "Applied",
+    "Phone Screen",
+    "Interview",
+    "Final Round",
+    "Offer",
+    "Rejected",
+    "Withdrawn",
 ]
 
 
@@ -470,12 +488,252 @@ def update_manual_job(
         ).execute()
 
 
+def create_dashboard_tab(sheet_id: str) -> str:
+    """
+    Create (or replace) a Dashboard tab with live COUNTIF formulas
+    that summarize application outcomes from the Jobs tab Status column.
+
+    The formulas auto-update whenever statuses are changed in the sheet —
+    no need to re-run this script after creation.
+
+    Args:
+        sheet_id: Google Sheet ID
+
+    Returns:
+        "ok" if created/refreshed, "error" on failure
+    """
+    svc = _sheets_service()
+
+    # Get existing sheet metadata
+    meta = svc.spreadsheets().get(
+        spreadsheetId=sheet_id,
+        fields="sheets.properties",
+    ).execute()
+    sheets_meta = meta.get("sheets", [])
+    existing_titles = [s["properties"]["title"] for s in sheets_meta]
+
+    # Create the tab if it doesn't exist
+    if DASHBOARD_SHEET_NAME not in existing_titles:
+        svc.spreadsheets().batchUpdate(
+            spreadsheetId=sheet_id,
+            body={"requests": [{"addSheet": {"properties": {"title": DASHBOARD_SHEET_NAME}}}]},
+        ).execute()
+        # Refresh metadata to get new gid
+        meta = svc.spreadsheets().get(
+            spreadsheetId=sheet_id,
+            fields="sheets.properties",
+        ).execute()
+        sheets_meta = meta.get("sheets", [])
+
+    # Find the dashboard tab's gid
+    dash_gid = None
+    for s in sheets_meta:
+        if s["properties"]["title"] == DASHBOARD_SHEET_NAME:
+            dash_gid = s["properties"]["sheetId"]
+            break
+
+    # ------------------------------------------------------------------ #
+    # Build cell values / formulas
+    # ------------------------------------------------------------------ #
+    # Row 1  – title
+    # Row 2  – blank
+    # Row 3  – column headers
+    # Row 4  – Total Tracked
+    # Row 5  – blank spacer
+    # Row 6+ – one row per status label
+    # Last+1 – blank
+    # Last+2 – conversion rates header
+    # Last+3 – Interview Rate
+    # Last+4 – Offer Rate
+
+    status_data_rows = []
+    for label in DASHBOARD_STATUSES:
+        formula = f'=COUNTIF(Jobs!H:H,"{label}")'
+        status_data_rows.append([label, formula])
+
+    # Total = everything in column H except the header (non-empty cells - 1 for header)
+    total_formula = "=COUNTA(Jobs!H:H)-1"
+
+    # Interview rate = (Interview + Final Round + Offer) / Applied  *100
+    applied_labels = '"Applied","Phone Screen","Interview","Final Round","Offer","Rejected","Withdrawn"'
+    applied_formula = f"=COUNTIFS(Jobs!H:H,\"Applied\")+COUNTIFS(Jobs!H:H,\"Phone Screen\")+COUNTIFS(Jobs!H:H,\"Interview\")+COUNTIFS(Jobs!H:H,\"Final Round\")+COUNTIFS(Jobs!H:H,\"Offer\")+COUNTIFS(Jobs!H:H,\"Rejected\")+COUNTIFS(Jobs!H:H,\"Withdrawn\")"
+    interview_rate_formula = (
+        '=IF(COUNTIFS(Jobs!H:H,"Applied")+COUNTIFS(Jobs!H:H,"Phone Screen")'
+        '+COUNTIFS(Jobs!H:H,"Interview")+COUNTIFS(Jobs!H:H,"Final Round")'
+        '+COUNTIFS(Jobs!H:H,"Offer")+COUNTIFS(Jobs!H:H,"Rejected")'
+        '+COUNTIFS(Jobs!H:H,"Withdrawn")=0,"—",'
+        'TEXT((COUNTIFS(Jobs!H:H,"Interview")+COUNTIFS(Jobs!H:H,"Final Round")'
+        '+COUNTIFS(Jobs!H:H,"Offer"))/'
+        '(COUNTIFS(Jobs!H:H,"Applied")+COUNTIFS(Jobs!H:H,"Phone Screen")'
+        '+COUNTIFS(Jobs!H:H,"Interview")+COUNTIFS(Jobs!H:H,"Final Round")'
+        '+COUNTIFS(Jobs!H:H,"Offer")+COUNTIFS(Jobs!H:H,"Rejected")'
+        '+COUNTIFS(Jobs!H:H,"Withdrawn"))*100,"0.0")&"%")'
+    )
+    offer_rate_formula = (
+        '=IF(COUNTIFS(Jobs!H:H,"Applied")+COUNTIFS(Jobs!H:H,"Phone Screen")'
+        '+COUNTIFS(Jobs!H:H,"Interview")+COUNTIFS(Jobs!H:H,"Final Round")'
+        '+COUNTIFS(Jobs!H:H,"Offer")+COUNTIFS(Jobs!H:H,"Rejected")'
+        '+COUNTIFS(Jobs!H:H,"Withdrawn")=0,"—",'
+        'TEXT(COUNTIFS(Jobs!H:H,"Offer")/'
+        '(COUNTIFS(Jobs!H:H,"Applied")+COUNTIFS(Jobs!H:H,"Phone Screen")'
+        '+COUNTIFS(Jobs!H:H,"Interview")+COUNTIFS(Jobs!H:H,"Final Round")'
+        '+COUNTIFS(Jobs!H:H,"Offer")+COUNTIFS(Jobs!H:H,"Rejected")'
+        '+COUNTIFS(Jobs!H:H,"Withdrawn"))*100,"0.0")&"%")'
+    )
+
+    values = (
+        [["Job Search Dashboard", ""], ["", ""]]          # rows 1-2
+        + [["Status", "Count"]]                            # row 3
+        + [["Total Tracked", total_formula]]               # row 4
+        + [["", ""]]                                       # row 5
+        + status_data_rows                                 # rows 6+
+        + [["", ""], ["Conversion Rates", ""], ["Interview Rate (of Applied)", interview_rate_formula], ["Offer Rate (of Applied)", offer_rate_formula]]
+    )
+
+    svc.spreadsheets().values().update(
+        spreadsheetId=sheet_id,
+        range=f"'{DASHBOARD_SHEET_NAME}'!A1",
+        valueInputOption="USER_ENTERED",
+        body={"values": values},
+    ).execute()
+
+    # ------------------------------------------------------------------ #
+    # Formatting
+    # ------------------------------------------------------------------ #
+    def _cell_fmt(row, col, bold=False, font_size=None, bg_rgb=None, fg_rgb=None):
+        """Build a repeatCell formatting request for a single cell."""
+        fmt = {"textFormat": {}}
+        if bold:
+            fmt["textFormat"]["bold"] = True
+        if font_size:
+            fmt["textFormat"]["fontSize"] = font_size
+        if fg_rgb:
+            fmt["textFormat"]["foregroundColor"] = fg_rgb
+        if bg_rgb:
+            fmt["backgroundColor"] = bg_rgb
+        return {
+            "repeatCell": {
+                "range": {
+                    "sheetId": dash_gid,
+                    "startRowIndex": row,
+                    "endRowIndex": row + 1,
+                    "startColumnIndex": col,
+                    "endColumnIndex": col + 1,
+                },
+                "cell": {"userEnteredFormat": fmt},
+                "fields": "userEnteredFormat(textFormat,backgroundColor)",
+            }
+        }
+
+    def _row_fmt(row, end_col, bold=False, bg_rgb=None):
+        """Build a repeatCell formatting request for a full row range."""
+        fmt = {}
+        if bold:
+            fmt["textFormat"] = {"bold": True}
+        if bg_rgb:
+            fmt["backgroundColor"] = bg_rgb
+        return {
+            "repeatCell": {
+                "range": {
+                    "sheetId": dash_gid,
+                    "startRowIndex": row,
+                    "endRowIndex": row + 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": end_col,
+                },
+                "cell": {"userEnteredFormat": fmt},
+                "fields": "userEnteredFormat(" + ",".join(
+                    (["textFormat"] if bold else []) +
+                    (["backgroundColor"] if bg_rgb else [])
+                ) + ")",
+            }
+        }
+
+    dark_blue   = {"red": 0.11, "green": 0.27, "blue": 0.49}
+    white       = {"red": 1.0,  "green": 1.0,  "blue": 1.0}
+    light_grey  = {"red": 0.93, "green": 0.93, "blue": 0.93}
+    mid_grey    = {"red": 0.85, "green": 0.85, "blue": 0.85}
+
+    # Row indices (0-based)
+    title_row       = 0
+    header_row      = 2
+    total_row       = 3
+    first_status    = 5                          # first DASHBOARD_STATUSES row
+    conv_header_row = first_status + len(DASHBOARD_STATUSES) + 1
+    interview_row   = conv_header_row + 1
+    offer_row       = conv_header_row + 2
+
+    fmt_requests = [
+        # Title row — dark blue background, white bold text, larger font
+        _row_fmt(title_row, 2, bold=True, bg_rgb=dark_blue),
+        _cell_fmt(title_row, 0, bold=True, font_size=14, bg_rgb=dark_blue, fg_rgb=white),
+        # Column header row
+        _row_fmt(header_row, 2, bold=True, bg_rgb=mid_grey),
+        # Total row — slightly shaded
+        _row_fmt(total_row, 2, bold=True, bg_rgb=light_grey),
+        # Conversion rates section header
+        _row_fmt(conv_header_row, 2, bold=True, bg_rgb=mid_grey),
+    ]
+
+    # Alternate shading on status rows
+    for i, _ in enumerate(DASHBOARD_STATUSES):
+        row_idx = first_status + i
+        if i % 2 == 0:
+            fmt_requests.append(_row_fmt(row_idx, 2, bg_rgb=light_grey))
+
+    # Set column A width to ~200px and column B to ~100px
+    fmt_requests += [
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": dash_gid,
+                    "dimension": "COLUMNS",
+                    "startIndex": 0,
+                    "endIndex": 1,
+                },
+                "properties": {"pixelSize": 220},
+                "fields": "pixelSize",
+            }
+        },
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": dash_gid,
+                    "dimension": "COLUMNS",
+                    "startIndex": 1,
+                    "endIndex": 2,
+                },
+                "properties": {"pixelSize": 110},
+                "fields": "pixelSize",
+            }
+        },
+        # Freeze header rows (title + blank + column header)
+        {
+            "updateSheetProperties": {
+                "properties": {
+                    "sheetId": dash_gid,
+                    "gridProperties": {"frozenRowCount": 3},
+                },
+                "fields": "gridProperties.frozenRowCount",
+            }
+        },
+    ]
+
+    svc.spreadsheets().batchUpdate(
+        spreadsheetId=sheet_id,
+        body={"requests": fmt_requests},
+    ).execute()
+
+    return "ok"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Manage the Job Tracker Google Sheet.")
     parser.add_argument("--action", required=True,
                         choices=["create", "get_urls", "get_job_hashes", "append_row",
                                  "update_notes", "update_cover_letter",
-                                 "create_manual_tab", "get_manual_jobs", "update_manual_job"])
+                                 "create_manual_tab", "get_manual_jobs", "update_manual_job",
+                                 "create_dashboard_tab"])
     parser.add_argument("--sheet_id", default=None)
     parser.add_argument("--folder_id", default=None,
                         help="Drive folder ID to place the sheet in (for create action)")
@@ -548,6 +806,10 @@ def main():
                 salary=args.salary,
             )
             print("ok")
+
+        elif args.action == "create_dashboard_tab":
+            result = create_dashboard_tab(args.sheet_id)
+            print(result)
 
         sys.exit(0)
 

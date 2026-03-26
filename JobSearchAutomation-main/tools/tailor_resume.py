@@ -341,7 +341,7 @@ def create_doc_from_template(company: str, job_title: str, content_file: Path) -
     TMP_FOLDER.mkdir(exist_ok=True)
     safe_company = sanitize_filename(company)
     safe_title = sanitize_filename(job_title)
-    filename = f"{safe_company}-{safe_title}-Resume.docx"
+    filename = f"Watson_Dan_{safe_company}_{safe_title}_Resume.docx"
     tmp_path = TMP_FOLDER / filename
     shutil.copy2(str(resume_path), str(tmp_path))
 
