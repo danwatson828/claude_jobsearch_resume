@@ -1,0 +1,21 @@
+.env
+ideal_role.json
+.tmp/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local user content (personal resume data — do not commit)
+resume/*
+!resume/README.txt
+tools/generate_batch_content.py
+
+# Local editor/OS noise
+.DS_Store
+Thumbs.db
+.claude/scheduled_tasks.lock
+.claude/settings.local.json

@@ -1,0 +1,43 @@
+{
+  "mcpServers": {},
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "Glob(*)",
+      "Grep(*)",
+      "mcp__claude_ai_Indeed__search_jobs",
+      "mcp__claude_ai_Indeed__get_job_details",
+      "mcp__claude_ai_Indeed__get_company_data",
+      "mcp__claude_ai_Indeed__get_resume"
+    ]
+  },
+  "allowedTools": [
+    "mcp__claude_ai_Indeed__search_jobs",
+    "mcp__claude_ai_Indeed__get_job_details",
+    "mcp__claude_ai_Indeed__get_company_data",
+    "mcp__claude_ai_Indeed__get_resume",
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep"
+  ],
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python tools/check_ai_writing.py --hook"
+          }
+        ]
+      }
+    ]
+  }
+}
