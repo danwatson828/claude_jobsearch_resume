@@ -263,18 +263,24 @@ def append_row(sheet_id: str, row: list) -> int:
         1-indexed integer row number of the newly appended row
     """
     svc = _sheets_service()
-    result = svc.spreadsheets().values().append(
+
+    # Find the next empty row by counting existing values in column A
+    result = svc.spreadsheets().values().get(
         spreadsheetId=sheet_id,
-        range=f"{SHEET_NAME}!A1",
+        range=f"{SHEET_NAME}!A:A",
+    ).execute()
+    existing = result.get("values", [])
+    next_row = len(existing) + 1  # 1-indexed, one past the last populated row
+
+    # Write directly to the next empty row
+    svc.spreadsheets().values().update(
+        spreadsheetId=sheet_id,
+        range=f"{SHEET_NAME}!A{next_row}",
         valueInputOption="RAW",
-        insertDataOption="INSERT_ROWS",
         body={"values": [row]},
     ).execute()
 
-    updated_range = result["updates"]["updatedRange"]
-    # Parse row number from range like "Jobs!A5:J5"
-    row_num = int(updated_range.split("!")[1].split(":")[0][1:])
-    return row_num
+    return next_row
 
 
 def update_notes(sheet_id: str, row_num: int, notes: str) -> None:
